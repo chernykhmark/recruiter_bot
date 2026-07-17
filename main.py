@@ -6,6 +6,7 @@ from storage import Storage
 from collectors.hh_selenium import HHSeleniumCollector
 from analyzers.openai_analyzer import OpenAIAnalyzer
 from notifiers.telegram import TelegramNotifier
+from shadowsocks_client import ShadowsocksClient
 
 logging.basicConfig(
     level=logging.INFO,
@@ -15,15 +16,27 @@ logger = logging.getLogger("main")
 
 
 def run() -> None:
-    # --- Сборка слоёв (единственное место, где выбираются реализации) ---
-    collector = HHSeleniumCollector()
-    analyzer = OpenAIAnalyzer()
-    notifier = TelegramNotifier()
-    storage = Storage()
+    collector = None
+    storage = None
+    shadowsocks = ShadowsocksClient()
 
     try:
+        shadowsocks.start()
+        # Конструктор collector запускает Chrome, поэтому он тоже должен быть
+        # внутри try: иначе ошибка старта обходила обработку и finally.
+        collector = HHSeleniumCollector()
+        analyzer = OpenAIAnalyzer()
+        notifier = TelegramNotifier()
+        storage = Storage()
+
         vacancies = collector.get_vacancies()
         logger.info("Собрано вакансий: %d", len(vacancies))
+
+        TEST_VACANCY_ID = "134703516"  # временный тест на одной вакансии
+        vacancies = [v for v in vacancies if v.id == TEST_VACANCY_ID]
+        if not vacancies:
+            logger.error("Тестовая вакансия %s не найдена среди активных.", TEST_VACANCY_ID)
+            return
 
         for vacancy in vacancies:
             # main.py (фрагмент run(): тело for-цикла по вакансиям — заменить целиком)
@@ -72,9 +85,14 @@ def run() -> None:
                 )
                 continue
 
+    except Exception:
+        logger.exception("Критическая ошибка запуска или выполнения бота.")
     finally:
-        collector.close()
-        storage.close()
+        if collector is not None:
+            collector.close()
+        if storage is not None:
+            storage.close()
+        shadowsocks.stop()
         logger.info("Работа завершена.")
 
 

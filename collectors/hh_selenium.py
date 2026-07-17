@@ -1,7 +1,11 @@
 # collectors/hh_selenium.py
 import logging
+import os
 import re
+import socket
+import sys
 import time
+from pathlib import Path
 from urllib.parse import urljoin
 
 import undetected_chromedriver as uc
@@ -46,18 +50,83 @@ class HHSeleniumCollector(BaseCollector):
     # ------------------------------------------------------------------ #
         # collectors/hh_selenium.py
 
-    def _build_driver(self):
-        options = uc.ChromeOptions()
-        options.add_argument(f"--user-data-dir={config.chrome_session_path}")
-        driver = uc.Chrome(options=options, version_main=config.chrome_version_main)
+    @staticmethod
+    def _clear_stale_profile_locks(session_path: Path) -> None:
+        """Удалить блокировки профиля, оставшиеся после аварии Chrome.
 
-        # Открываем сайт и даём время залогиниться вручную (ввести код подтверждения)
-        driver.get(config.vacancies_url)
-        input(
-            "\n>>> Залогинься в открытом окне Chrome (введи код подтверждения),\n"
-            ">>> затем вернись сюда и нажми Enter для продолжения...\n"
+        Если процесс из SingletonLock ещё жив, профиль не трогаем: два Chrome
+        не должны одновременно писать в одну chrome_session.
+        """
+        lock_path = session_path / "SingletonLock"
+        if not lock_path.is_symlink():
+            return
+
+        try:
+            lock_target = os.readlink(lock_path)
+            host, pid_text = lock_target.rsplit("-", 1)
+            pid = int(pid_text)
+        except (OSError, ValueError):
+            log.warning("Не удалось проверить блокировку Chrome: %s", lock_path)
+            return
+
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+                path = session_path / name
+                if path.is_symlink():
+                    path.unlink()
+            log.info("Удалена устаревшая блокировка chrome_session (PID %d).", pid)
+        except PermissionError as exc:
+            raise RuntimeError(
+                f"Не удалось проверить процесс Chrome PID {pid}."
+            ) from exc
+        else:
+            lock_host = host.removesuffix(".local").casefold()
+            current_host = socket.gethostname().removesuffix(".local").casefold()
+            if lock_host != current_host:
+                raise RuntimeError(
+                    f"Профиль Chrome заблокирован другим компьютером: {lock_target}"
+                )
+            raise RuntimeError(
+                "chrome_session уже используется другим Chrome "
+                f"(PID {pid}). Закройте его перед запуском бота."
+            )
+
+        # collectors/hh_selenium.py
+
+    def _build_driver(self):
+        session_path = Path(config.chrome_session_path).expanduser()
+        if not session_path.is_absolute():
+            session_path = Path(__file__).resolve().parent.parent / session_path
+        session_path.mkdir(parents=True, exist_ok=True)
+        session_path = session_path.resolve()
+        self._clear_stale_profile_locks(session_path)
+
+        fresh_profile = not (session_path / "Default" / "Preferences").exists()
+        options = uc.ChromeOptions()
+        driver = uc.Chrome(
+            options=options,
+            user_data_dir=str(session_path),
+            version_main=config.chrome_version_main,
         )
+
+        driver.get(config.vacancies_url)
+        # После удаления chrome_session необходимо дать пользователю войти в
+        # аккаунт. Для уже созданного профиля пауза включается только через env.
+        if fresh_profile or config.chrome_manual_login:
+            if not sys.stdin.isatty():
+                log.warning(
+                    "Создана новая chrome_session, но запуск неинтерактивный. "
+                    "Войдите в hh.ru в открывшемся Chrome и запустите бот повторно."
+                )
+                return driver
+            input(
+                "\n>>> Залогинься в открытом окне Chrome (введи код подтверждения),\n"
+                ">>> затем вернись сюда и нажми Enter для продолжения...\n"
+            )
         return driver
+
     def close(self):
         """Закрыть драйвер. Вызывается оркестратором в finally."""
         try:
@@ -66,7 +135,12 @@ class HHSeleniumCollector(BaseCollector):
         except Exception:
             log.exception("Ошибка при закрытии драйвера.")
 
-    def _get_soup(self, url: str, wait: float = 3.0) -> BeautifulSoup:
+    # collectors/hh_selenium.py
+    def _get_soup(self, url: str, wait: float = 2.0) -> BeautifulSoup:
+        """Открыть страницу и вернуть BeautifulSoup.
+        wait — базовая задержка под загрузку страницы; self._delay — антиботовая
+        добавка из конфига. Для вакансий и резюме достаточно 2–3 секунд.
+        """
         self.driver.get(url)
         time.sleep(wait + self._delay)
         return BeautifulSoup(self.driver.page_source, "html.parser")
@@ -85,7 +159,7 @@ class HHSeleniumCollector(BaseCollector):
         for i, (title_hint, url) in enumerate(links.items(), 1):
             try:
                 log.info("Парсинг вакансии %d/%d: %s", i, len(links), url)
-                vacancy = self._parse_vacancy(url)
+                vacancy = self._parse_vacancy(url, title_hint=title_hint)
                 if vacancy:
                     vacancies.append(vacancy)
             except Exception:
@@ -116,13 +190,27 @@ class HHSeleniumCollector(BaseCollector):
         log.info("Найдено ссылок на вакансии: %d", len(links))
         return links
 
-    def _parse_vacancy(self, url: str) -> Vacancy | None:
+    def _parse_vacancy(self, url: str, title_hint: str = "") -> Vacancy | None:
         soup = self._get_soup(url)
 
-        title_el = soup.find("div", {"class": "vacancy-title"})
+        # Классы hh.ru динамические, поэтому сначала используем стабильный
+        # data-qa. h1 и название из списка вакансий служат резервом.
+        title_el = (
+            soup.select_one('[data-qa="vacancy-title"]')
+            or soup.find("h1")
+        )
         title = self._clean(title_el.get_text(separator="\n")) if title_el else ""
+        if not title:
+            og_title = soup.select_one('meta[property="og:title"]')
+            if og_title:
+                title = self._clean(og_title.get("content", ""))
+        if not title:
+            title = self._clean(title_hint)
 
-        desc_el = soup.find("div", {"class": "vacancy-description"})
+        desc_el = (
+            soup.select_one('[data-qa="vacancy-description"]')
+            or soup.find("div", {"class": "vacancy-description"})
+        )
         description = self._clean(desc_el.get_text(separator="\n")) if desc_el else ""
 
         vacancy_id = url.split("/")[-1].split("?")[0]
@@ -148,6 +236,7 @@ class HHSeleniumCollector(BaseCollector):
     # ------------------------------------------------------------------ #
     # BaseCollector: get_resumes                                         #
     # ------------------------------------------------------------------ #
+        # collectors/hh_selenium.py
     def get_resumes(self, vacancy: Vacancy) -> list[Resume]:
         responses_url = self._responses_urls.get(vacancy.id)
         if not responses_url:
@@ -160,7 +249,7 @@ class HHSeleniumCollector(BaseCollector):
             log.exception("Ошибка сбора ссылок на резюме (вакансия %s).", vacancy.id)
             return []
 
-        resume_urls = resume_urls[: config.max_resumes_per_vacancy]
+        # Лимит убран: парсим все отклики со всех страниц пагинации.
         log.info("Вакансия %s: резюме к парсингу %d.", vacancy.id, len(resume_urls))
 
         resumes: list[Resume] = []
@@ -177,40 +266,66 @@ class HHSeleniumCollector(BaseCollector):
         log.info("Вакансия %s: собрано резюме %d.", vacancy.id, len(resumes))
         return resumes
 
+        # collectors/hh_selenium.py
     def _collect_resume_links(self, url: str) -> list[str]:
-        soup = self._get_soup(url)
+        """Пройти ВСЕ страницы откликов до конца пагинации.
 
-        try:
-            container = soup.find(
-                "ul", class_="magritte-number-pages-container___YIJLn_4-0-103"
-            )
-            total_pages = len(container.find_all("li"))
-        except Exception:
-            total_pages = 1
-        log.info("Страниц откликов: %d", total_pages)
-
+        Не полагаемся на подсчёт страниц по динамическому CSS-классу (хрупко,
+        раздел 11). Идём по page=0,1,2,... пока страница даёт НОВЫЕ ссылки на
+        резюме. Как только новых ссылок нет — останавливаемся.
+        """
         resume_links: list[str] = []
+        seen: set[str] = set()
 
-        for page in range(total_pages):
+        page = 0
+        max_pages = config.max_response_pages  # защита от бесконечного цикла
+
+        while page < max_pages:
             try:
-                if page > 0:
+                if page == 0:
+                    page_url = url
+                    soup = self._get_soup(page_url)
+                else:
+                    # hh использует параметр page для пагинации откликов.
                     page_url = url.replace("hhtmFrom=vacancy", f"page={page}")
                     log.info("Страница откликов #%d", page)
-                    soup = self._get_soup(page_url, wait=6.0)
+                    soup = self._get_soup(page_url, wait=4.0)
 
                 responses_div = soup.find("div", {"data-qa": "vacancy-real-responses"})
                 if not responses_div:
-                    continue
+                    log.info("Страница #%d: блок откликов не найден — конец.", page)
+                    break
 
-                for link in responses_div.find_all(
+                links = responses_div.find_all(
                     "a",
                     href=lambda x: x and "/resume/" in x and "suitable_resume" not in x,
-                ):
-                    resume_links.append(urljoin("https://hh.ru", link["href"]))
-            except Exception:
-                log.exception("Ошибка на странице откликов #%d — пропуск страницы.", page)
-                continue
+                )
 
+                new_on_page = 0
+                for link in links:
+                    full = urljoin("https://hh.ru", link["href"])
+                    if full not in seen:
+                        seen.add(full)
+                        resume_links.append(full)
+                        new_on_page += 1
+
+                log.info(
+                    "Страница откликов #%d: найдено ссылок %d, новых %d",
+                    page, len(links), new_on_page,
+                )
+
+                # Нет новых резюме на странице — пагинация закончилась.
+                if new_on_page == 0:
+                    log.info("Страница #%d новых резюме не дала — конец пагинации.", page)
+                    break
+
+            except Exception:
+                log.exception("Ошибка на странице откликов #%d — стоп пагинации.", page)
+                break
+
+            page += 1
+
+        log.info("Всего собрано ссылок на резюме: %d", len(resume_links))
         return resume_links
 
     def _parse_resume(self, url: str) -> Resume | None:

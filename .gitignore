@@ -4,4 +4,5 @@
 docs/
 recruiter_bot.db
 chrome_session/
+tools/shadowsocks/
 __pycache__

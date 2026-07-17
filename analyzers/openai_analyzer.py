@@ -4,6 +4,7 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import httpx
 from openai import OpenAI
 
 from analyzers.base import BaseAnalyzer
@@ -76,7 +77,18 @@ class OpenAIAnalyzer(BaseAnalyzer):
     """Двухэтапная оценка резюме через OpenAI (раздел 6.2 документа)."""
 
     def __init__(self) -> None:
-        self.client = OpenAI(api_key=config.openai_api_key)
+        client_kwargs = {
+            "api_key": config.openai_api_key,
+            "timeout": 120.0,
+            "max_retries": 0,
+        }
+        if config.openai_proxy_url:
+            client_kwargs["http_client"] = httpx.Client(
+                proxy=config.openai_proxy_url,
+                trust_env=False,
+                timeout=httpx.Timeout(120.0, connect=15.0),
+            )
+        self.client = OpenAI(**client_kwargs)
         self.model = config.llm_model
 
     # ------------------------------------------------------------------
