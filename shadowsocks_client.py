@@ -29,9 +29,9 @@ class ShadowsocksClient:
         binary = Path(config.shadowsocks_binary).expanduser()
         if not binary.is_absolute():
             binary = Path(__file__).resolve().parent / binary
-        if not binary.is_file():
+        if not binary.is_file() or binary.stat().st_size == 0 or not os.access(binary, os.X_OK):
             raise RuntimeError(
-                f"Не найден проектный Shadowsocks-клиент: {binary}. "
+                f"Shadowsocks-клиент отсутствует или не является исполняемым файлом: {binary}. "
                 "Запустите scripts/install_shadowsocks.sh."
             )
 
@@ -46,7 +46,7 @@ class ShadowsocksClient:
         while self.openai_port == self.telegram_port:
             self.openai_port = self._find_free_port()
         config.telegram_proxy_url = f"socks5h://127.0.0.1:{self.telegram_port}"
-        config.openai_proxy_url = f"http://127.0.0.1:{self.openai_port}"
+        config.llm_proxy_url = f"http://127.0.0.1:{self.openai_port}"
 
         runtime_config = {
             "server": config.shadowsocks_server,
@@ -65,7 +65,7 @@ class ShadowsocksClient:
             self._start_telegram_listener(telegram_binary, self.telegram_port)
             self._start_listener(binary, self.openai_port, "http")
             logger.info(
-                "Shadowsocks запущен: Telegram SOCKS5h :%d, OpenAI HTTP/IPv4 :%d.",
+                "Shadowsocks запущен: Telegram SOCKS5h :%d, LLM HTTP/IPv4 :%d.",
                 self.telegram_port,
                 self.openai_port,
             )

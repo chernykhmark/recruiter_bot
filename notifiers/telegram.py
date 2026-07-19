@@ -1,9 +1,9 @@
 # notifiers/telegram.py
 import io
 import logging
-import os
 import socket as _socket
 import time
+from pathlib import Path
 from typing import List
 
 import requests
@@ -114,17 +114,32 @@ class TelegramNotifier(BaseNotifier):
         if font_name in pdfmetrics.getRegisteredFontNames():
             return font_name
 
-        font_path = config.font_path
-        if not os.path.exists(font_path):
-            logger.error(
-                "Шрифт не найден: %s. Русский текст в PDF не отобразится. "
-                "Скачай DejaVuSans.ttf в ./fonts/.",
-                font_path,
+        candidates = [
+            Path(path).expanduser()
+            for path in (
+                config.font_path,
+                "./fonts/DejaVuSans.ttf",
+                "/System/Library/Fonts/Supplemental/Arial.ttf",
             )
-            return "Helvetica"
+            if path
+        ]
+        attempted: list[str] = []
+        for font_path in candidates:
+            attempted.append(str(font_path))
+            if not font_path.is_file() or font_path.stat().st_size == 0:
+                continue
+            try:
+                pdfmetrics.registerFont(TTFont(font_name, str(font_path)))
+                logger.info("PDF: используется шрифт %s", font_path)
+                return font_name
+            except Exception as exc:  # повреждённый или неподдерживаемый шрифт
+                logger.warning("PDF: не удалось загрузить шрифт %s: %s", font_path, exc)
 
-        pdfmetrics.registerFont(TTFont(font_name, font_path))
-        return font_name
+        raise RuntimeError(
+            "Не найден корректный TTF-шрифт с кириллицей для PDF. "
+            f"Проверены: {', '.join(attempted)}. "
+            "Укажите путь к нему в PDF_FONT_PATH."
+        )
 
     def _wrap_text(self, text: str, font: str, size: int, max_width: float) -> list[str]:
         """Перенос текста по ширине max_width (в поинтах). Возвращает строки."""

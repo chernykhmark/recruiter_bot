@@ -14,16 +14,19 @@ def _get(key: str, default: str = "") -> str:
 @dataclass
 class Config:
     # --- Секреты (из .env) ---
-    openai_api_key: str = _get("OPENAI_API_KEY", "PLACEHOLDER_OPENAI_KEY")
+    openrouter_api_key: str = _get("OPENROUTER_API_KEY")
     telegram_token: str = _get("TELEGRAM_TOKEN", "PLACEHOLDER_TG_TOKEN")
     telegram_chat_id: str = _get("TELEGRAM_CHAT_ID", "PLACEHOLDER_CHAT_ID")
-    # Используется только клиентами OpenAI и Telegram. Chrome/Selenium этот
+    # Используется только клиентами LLM и Telegram. Chrome/Selenium этот
     # параметр не получает и продолжает подключаться напрямую.
-    openai_proxy_url: str = _get("OPENAI_PROXY_URL")
+    llm_proxy_url: str = _get("OPENROUTER_PROXY_URL", _get("OPENAI_PROXY_URL"))
     telegram_proxy_url: str = _get("TELEGRAM_PROXY_URL")
     shadowsocks_enabled: bool = _get("SHADOWSOCKS_ENABLED", "false").lower() == "true"
     shadowsocks_binary: str = _get(
-        "SHADOWSOCKS_BINARY", "./tools/shadowsocks/sslocal"
+        # `sslocal` is supplied by Homebrew's `shadowsocks-rust` formula.
+        # The old project-local path was an empty placeholder and cannot be
+        # executed by macOS.
+        "SHADOWSOCKS_BINARY", "/opt/homebrew/bin/sslocal"
     )
     shadowsocks_telegram_binary: str = _get(
         "SHADOWSOCKS_TELEGRAM_BINARY", "/opt/homebrew/bin/ss-local"
@@ -37,9 +40,11 @@ class Config:
     shadowsocks_local_port: int = int(_get("SHADOWSOCKS_LOCAL_PORT", "1090"))
 
     # --- Настройки LLM ---
-    llm_model: str = _get("LLM_MODEL", "gpt-4o-mini")
+    llm_model: str = _get("LLM_MODEL", "deepseek/deepseek-v3.2")
     filter_batch_size: int = int(_get("FILTER_BATCH_SIZE", "8"))
-    analyzer_workers: int = int(_get("ANALYZER_WORKERS", "5"))
+    # DeepSeek через OpenRouter надёжнее обрабатывается последовательно: при
+    # нескольких одновременных запросах отдельные ответы могут зависать.
+    analyzer_workers: int = int(_get("ANALYZER_WORKERS", "1"))
     top_n: int = int(_get("TOP_N", "20"))
 
     # Этап 1 (батч-фильтр мусора). False = тестируем только этап 2.
@@ -49,6 +54,9 @@ class Config:
     # Retry для запросов к LLM.
     llm_max_retries: int = int(_get("LLM_MAX_RETRIES", "3"))
     llm_retry_backoff_sec: float = float(_get("LLM_RETRY_BACKOFF_SEC", "2.0"))
+    # Ограничения ответа держат оценку резюме быстрой и предсказуемой.
+    llm_max_tokens: int = int(_get("LLM_MAX_TOKENS", "400"))
+    llm_request_timeout_sec: float = float(_get("LLM_REQUEST_TIMEOUT_SEC", "45.0"))
 
     # --- Настройки парсера ---
     parser_delay_sec: float = float(_get("PARSER_DELAY_SEC", "1.0"))
@@ -57,7 +65,9 @@ class Config:
     chrome_manual_login: bool = _get("CHROME_MANUAL_LOGIN", "false").lower() == "true"
     vacancies_url: str = _get("VACANCIES_URL", "https://hh.ru/employer/vacancies")
     max_response_pages: int = int(_get("MAX_RESPONSE_PAGES", "100"))
-    font_path: str = _get("PDF_FONT_PATH", "./fonts/DejaVuSans.ttf")
+    # При необходимости путь можно явно задать в .env. Иначе уведомитель
+    # подберёт доступный системный шрифт с кириллицей.
+    font_path: str = _get("PDF_FONT_PATH")
 
     # --- Хранилище ---
     db_path: str = _get("DB_PATH", "./recruiter_bot.db")

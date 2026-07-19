@@ -73,20 +73,30 @@ EVAL_USER_TEMPLATE = """ВАКАНСИЯ
 """
 
 
-class OpenAIAnalyzer(BaseAnalyzer):
-    """Двухэтапная оценка резюме через OpenAI (раздел 6.2 документа)."""
+class OpenRouterAnalyzer(BaseAnalyzer):
+    """Двухэтапная оценка резюме через DeepSeek в OpenRouter."""
 
     def __init__(self) -> None:
         client_kwargs = {
-            "api_key": config.openai_api_key,
-            "timeout": 120.0,
+            "api_key": config.openrouter_api_key,
+            "base_url": "https://openrouter.ai/api/v1",
+            "default_headers": {"X-OpenRouter-Title": "recruiter_bot"},
+            "timeout": config.llm_request_timeout_sec,
             "max_retries": 0,
         }
-        if config.openai_proxy_url:
+        if not config.openrouter_api_key:
+            raise RuntimeError(
+                "Не задан OPENROUTER_API_KEY. Создайте ключ в OpenRouter и добавьте "
+                "OPENROUTER_API_KEY=sk-or-v1-... в .env."
+            )
+        if config.llm_proxy_url:
             client_kwargs["http_client"] = httpx.Client(
-                proxy=config.openai_proxy_url,
+                proxy=config.llm_proxy_url,
                 trust_env=False,
-                timeout=httpx.Timeout(120.0, connect=15.0),
+                timeout=httpx.Timeout(
+                    config.llm_request_timeout_sec,
+                    connect=min(15.0, config.llm_request_timeout_sec),
+                ),
             )
         self.client = OpenAI(**client_kwargs)
         self.model = config.llm_model
@@ -233,7 +243,7 @@ class OpenAIAnalyzer(BaseAnalyzer):
         )
 
     # ------------------------------------------------------------------
-    # Низкоуровневый вызов OpenAI с retry
+    # Низкоуровневый вызов OpenRouter с retry
     # ------------------------------------------------------------------
     def _chat_json(self, system_prompt: str, user_prompt: str) -> str:
         last_exc: Exception | None = None
@@ -242,7 +252,11 @@ class OpenAIAnalyzer(BaseAnalyzer):
                 resp = self.client.chat.completions.create(
                     model=self.model,
                     temperature=0,
+                    max_tokens=config.llm_max_tokens,
                     response_format={"type": "json_object"},
+                    # Для классификации и короткого JSON reasoning не нужен:
+                    # он увеличивает задержку и расход токенов на длинных резюме.
+                    extra_body={"reasoning": {"enabled": False}},
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt},
@@ -253,8 +267,10 @@ class OpenAIAnalyzer(BaseAnalyzer):
                 last_exc = exc
                 wait = config.llm_retry_backoff_sec * attempt
                 logger.warning(
-                    "OpenAI сбой (попытка %d/%d): %s — жду %.1fs",
+                    "OpenRouter сбой (попытка %d/%d): %s — жду %.1fs",
                     attempt, config.llm_max_retries, exc, wait,
                 )
                 time.sleep(wait)
-        raise RuntimeError(f"OpenAI не ответил после {config.llm_max_retries} попыток: {last_exc}")
+        raise RuntimeError(
+            f"OpenRouter не ответил после {config.llm_max_retries} попыток: {last_exc}"
+        )

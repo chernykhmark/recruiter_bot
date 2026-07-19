@@ -4,7 +4,7 @@ import logging
 from config import config
 from storage import Storage
 from collectors.hh_selenium import HHSeleniumCollector
-from analyzers.openai_analyzer import OpenAIAnalyzer
+from analyzers.openai_analyzer import OpenRouterAnalyzer
 from notifiers.telegram import TelegramNotifier
 from shadowsocks_client import ShadowsocksClient
 
@@ -25,18 +25,18 @@ def run() -> None:
         # Конструктор collector запускает Chrome, поэтому он тоже должен быть
         # внутри try: иначе ошибка старта обходила обработку и finally.
         collector = HHSeleniumCollector()
-        analyzer = OpenAIAnalyzer()
+        analyzer = OpenRouterAnalyzer()
         notifier = TelegramNotifier()
         storage = Storage()
 
         vacancies = collector.get_vacancies()
         logger.info("Собрано вакансий: %d", len(vacancies))
 
-        # TEST_VACANCY_ID = "134703516"  # временный тест на одной вакансии
-        # vacancies = [v for v in vacancies if v.id == TEST_VACANCY_ID]
-        # if not vacancies:
-        #     logger.error("Тестовая вакансия %s не найдена среди активных.", TEST_VACANCY_ID)
-        #     return
+        TEST_VACANCY_ID = "134877595"  # временный тест на одной вакансии
+        vacancies = [v for v in vacancies if v.id == TEST_VACANCY_ID]
+        if not vacancies:
+            logger.error("Тестовая вакансия %s не найдена среди активных.", TEST_VACANCY_ID)
+            return
 
         for vacancy in vacancies:
             # main.py (фрагмент run(): тело for-цикла по вакансиям — заменить целиком)
