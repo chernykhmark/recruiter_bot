@@ -32,11 +32,11 @@ def run() -> None:
         vacancies = collector.get_vacancies()
         logger.info("Собрано вакансий: %d", len(vacancies))
 
-        TEST_VACANCY_ID = "134703516"  # временный тест на одной вакансии
-        vacancies = [v for v in vacancies if v.id == TEST_VACANCY_ID]
-        if not vacancies:
-            logger.error("Тестовая вакансия %s не найдена среди активных.", TEST_VACANCY_ID)
-            return
+        # TEST_VACANCY_ID = "134703516"  # временный тест на одной вакансии
+        # vacancies = [v for v in vacancies if v.id == TEST_VACANCY_ID]
+        # if not vacancies:
+        #     logger.error("Тестовая вакансия %s не найдена среди активных.", TEST_VACANCY_ID)
+        #     return
 
         for vacancy in vacancies:
             # main.py (фрагмент run(): тело for-цикла по вакансиям — заменить целиком)
