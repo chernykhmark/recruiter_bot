@@ -32,7 +32,7 @@ def run() -> None:
         vacancies = collector.get_vacancies()
         logger.info("Собрано вакансий: %d", len(vacancies))
 
-        TEST_VACANCY_ID = "134877595"  # временный тест на одной вакансии
+        TEST_VACANCY_ID = "135442372"  # временный тест на одной вакансии
         vacancies = [v for v in vacancies if v.id == TEST_VACANCY_ID]
         if not vacancies:
             logger.error("Тестовая вакансия %s не найдена среди активных.", TEST_VACANCY_ID)
